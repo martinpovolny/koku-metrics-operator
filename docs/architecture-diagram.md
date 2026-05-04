@@ -1,6 +1,10 @@
-# External Components Architecture
+# Architecture Diagrams
 
 ## System Overview
+
+High-level view of operator components and their interactions with OpenShift cluster resources and external systems. The controller orchestrates metrics collection, report generation, and upload to console.redhat.com.
+
+**Source**: `internal/controller/costmanagementmetricsconfig_controller.go`, `internal/collector/prometheus.go`, `internal/crhchttp/`
 
 ```mermaid
 flowchart TB
@@ -12,7 +16,7 @@ flowchart TB
         Prometheus[Prometheus/Thanos]
         ConfigMap[cluster-monitoring-config]
     end
-    
+
     subgraph Operator["koku-metrics-operator"]
         direction TB
         Controller[MetricsConfigReconciler]
@@ -20,33 +24,37 @@ flowchart TB
         HTTPClient[Koku HTTP Client]
         Storage[Storage Manager]
     end
-    
+
     subgraph External["External Systems"]
         direction TB
         KokuAPI[console.redhat.com API]
         ClusterVersion[ClusterVersion CR]
     end
-    
+
     Controller -->|1. Collect Metrics| Collector
     Collector -->|Prometheus API| Prometheus
     Collector -.->|Auth Token| Secret1
     Collector -->|Test Connection| ConfigMap
-    
+
     Controller -->|2. Generate Reports| Storage
     Storage -->|3. Package Files| PVC
-    
+
     Controller -->|4. Validate Auth| HTTPClient
     HTTPClient -->|Bearer/Basic/SVC Account| Secret2
     HTTPClient -->|Upload Reports| KokuAPI
     Controller -->|5. Create Source| HTTPClient
     HTTPClient -->|POST to| KokuAPI
-    
+
     Controller -.->|Read Cluster Info| ClusterVersion
 ```
 
-## Component Details
+---
 
-### 1. Prometheus/Thanos Connection Flow
+## Prometheus/Thanos Connection Flow
+
+Shows how the operator tests connectivity to Prometheus before collecting metrics. On failure, individual queries are retried with exponential backoff (up to 5 times per query). Successful connection sets `PrometheusConnected=true` in CR status.
+
+**Source**: `internal/collector/prometheus.go:168` (`GetPromConn`), `internal/collector/prometheus.go:212-291` (retry logic), `internal/controller/prometheus.go:162` (`collectPromStats`)
 
 ```mermaid
 sequenceDiagram
@@ -54,11 +62,11 @@ sequenceDiagram
     participant Ctrl as Controller
     participant Coll as Collector
     participant Prom as Prometheus/Thanos
-    
+
     Note over CR,Ctrl: Reconciliation starts
     Ctrl->>Coll: GetPromConn()
     Coll->>Prom: Query "up" (test connection)
-    
+
     alt Connection OK
         Coll->>Ctrl: Success
         Note over Ctrl: Set PrometheusConnected=true
@@ -76,7 +84,13 @@ sequenceDiagram
     end
 ```
 
-### 2. Authentication Flow
+---
+
+## Authentication Flow
+
+Three authentication modes are supported. Token auth (default) reads the cluster pull-secret and requires no validation. Service account auth exchanges client credentials for a short-lived token. Basic auth (deprecated) validates credentials against the Sources API, cached for 24 hours.
+
+**Source**: `internal/controller/costmanagementmetricsconfig_controller.go:386` (`setAuthentication`), `internal/controller/costmanagementmetricsconfig_controller.go:440` (`validateCredentials`), `internal/crhchttp/config.go:66` (`GetAccessToken`)
 
 ```mermaid
 flowchart LR
@@ -86,25 +100,31 @@ flowchart LR
         B --> C[Get cloud.openshift.com token]
         C --> D[Use as Bearer Token]
     end
-    
+
     subgraph BasicAuth["Basic Authentication (Deprecated)"]
         direction TB
         E[Read auth secret] --> F[Get username/password]
         F --> G[Validate every 24h]
     end
-    
+
     subgraph ServiceAccount["Service Account Auth"]
         direction TB
         H[Read service-account secret] --> I[Get client_id/client_secret]
         I --> J[Exchange for token]
         J --> K[Validate every 24h]
     end
-    
+
     TokenAuth -.->|Preferred| D
     BasicAuth -.->|Remove after 2024-12-31| G
 ```
 
-### 3. Reporting Cycle
+---
+
+## Reporting Cycle
+
+Metrics are collected hour-by-hour from Prometheus. CSV files are written to the `reports/` directory and packaged into TAR.GZ archives when the upload cycle elapses (default 360 min) or at end-of-day (hour 23). Packaged files are then uploaded to the Koku Ingress API.
+
+**Source**: `internal/controller/prometheus.go:162` (`collectPromStats`), `internal/collector/collector.go:195` (`GenerateReports`), `internal/controller/costmanagementmetricsconfig_controller.go:529` (`packageFilesWithCycle`)
 
 ```mermaid
 flowchart LR
@@ -114,17 +134,23 @@ flowchart LR
         H3 --> H4[Hour 04:00]
         H4 --> H5[Hour 05:00]
     end
-    
+
     subgraph Processing["Processing Phase"]
         direction TB
         PKG{Package files<br/>every 60m} --> UP
     end
-    
+
     DataCollection ==> PKG
     PKG ==> UP[Upload to Koku]
 ```
 
-### 4. Data Flow with External APIs
+---
+
+## Data Flow with External APIs
+
+The operator communicates with two external tiers: Prometheus for metrics collection (via thanos-querier) and console.redhat.com for uploads (Ingress API) and integration management (Sources API). Upload is blocked until a valid source/integration exists.
+
+**Source**: `internal/controller/costmanagementmetricsconfig_controller.go:506` (`checkSource`), `internal/controller/costmanagementmetricsconfig_controller.go:655` (`setAuthAndUpload`), `internal/crhchttp/http_cloud_dot_redhat.go:156` (`Upload`), `internal/sources/handler.go`
 
 ```mermaid
 flowchart TD
@@ -133,23 +159,25 @@ flowchart TD
         P1[Prometheus Query API]
         P2[Thanos Federation -- if enabled]
     end
-    
+
     subgraph Koku_Tier["Koku Tier"]
         direction TB
         K1[Koku Ingest API]
         K2[Koku Integration API]
     end
-    
+
     Controller -->|Query Range| P1
     P1 -.->|Queries via| P2
     P2 -->|Returns metrics| Controller
-    
+
     Storage -->|POST multipart/form-data| K1
     K1 -->|202 Accepted| Controller
-    
+
     Controller -->|POST sources API| K2
     K2 -->|Source Created| Controller
 ```
+
+---
 
 ## External Dependencies
 
