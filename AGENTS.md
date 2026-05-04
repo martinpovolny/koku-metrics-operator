@@ -159,3 +159,66 @@ Upload cycle cannot be less than 60 minutes (enforced in controller).
 
 ### Initial Data Collection
 First reconcile after CR creation collects previous data based on Prometheus retention period. Subsequent reconciles only collect current hour.
+
+---
+
+## Reconciliation Flow
+
+Each reconcile cycle (requeues every 5 min on success, exponential back-off on error):
+
+1. **Fetch CR** → apply defaults → reflect spec into status
+2. **Configure PVC storage** if running in-cluster
+3. **Resolve cluster ID** from `ClusterVersion` resource
+4. **Detect operator version changes** (git commit hash comparison)
+5. **Calculate Prometheus query time range** (hourly chunks, up to 96 hours back)
+6. **Collect loop**: For each hour, run PromQL queries → write CSV files to `reports/` directory
+7. **Package**: After 96 hours of collection, compress CSVs → TAR.GZ with manifest
+8. **Auth**: Extract credentials from pull-secret (token) or user-provided secret (basic/SA)
+9. **Source check**: Verify/create integration on cloud.redhat.com (every 1440 min by default)
+10. **Upload**: POST packaged files to console.redhat.com Ingress API (`/api/ingress/v1/upload`) (every 360 min by default)
+11. **Trim old packages** and write results to CR status → requeue
+
+### Time Range Calculation (`getTimeRange()`)
+
+Determines the `[start, end)` window of hours to collect:
+
+- **Initial collection** (`spec.prometheusConfig.collectPreviousData: true`): On first reconcile (no `LastQuerySuccessTime`), start is pushed back by Prometheus retention period (read from `openshift-monitoring/cluster-monitoring-config` ConfigMap, defaults to 14 days, capped at 90 days)
+- **Gap recovery**: If `LastQuerySuccessTime` is more than one hour behind current hour, resumes from where it left off (up to retention limit)
+- **Normal operation**: Start = previous full hour, end = start + 59m59s
+
+### CSV Reports Generated
+
+For each hour, the operator queries thanos-querier and writes CSV files:
+
+| Report File | Metrics |
+|-------------|---------|
+| `cm-openshift-node-usage-*` | Node CPU/memory capacity and usage |
+| `cm-openshift-pod-usage-*` | Pod requests, limits, and usage |
+| `cm-openshift-namespace-usage-*` | Namespace-level aggregation |
+| `cm-openshift-storage-usage-*` | PVC storage capacity and usage |
+| `cm-openshift-vm-usage-*` | Virtual machine metrics (kubevirt) |
+| `cm-openshift-nvidia-gpu-usage-*` | NVIDIA GPU metrics (DCGM) |
+| `ros-openshift-container-*` | Resource optimization (container-level) |
+| `ros-openshift-namespace-*` | Resource optimization (namespace-level) |
+
+ROS data collection is opt-in: namespaces must carry the label `insights_cost_management_optimizations=true` or `cost_management_optimizations=true`.
+
+### Packaging & Upload
+
+- **Packaging**: Compresses CSVs from `reports/` into `upload/*.tar.gz` with `manifest.json` (UUID, cluster ID, timestamp, file list)
+- **End-of-day handling**: At hour 23, files are **moved** out of `reports/` (no more appending); otherwise they are **copied** to allow continued appending
+- **Upload cycle**: Runs every `UploadCycle` minutes (default 360 min, minimum 60 min) or at end-of-day
+- **Upload gating**: Files accumulate in `upload/` until a valid source/integration exists on console.redhat.com
+- **HTTP 202**: Local tar.gz is deleted and `LastSuccessfulUploadTime` is recorded
+- **HTTP 401**: Credentials are re-validated immediately
+
+---
+
+## Architecture Diagrams
+
+See [docs/architecture-diagram.md](docs/architecture-diagram.md) for detailed Mermaid diagrams showing:
+- External components architecture
+- Prometheus/Thanos connection flow
+- Authentication flow
+- Reporting cycle
+- Data flow with external APIs
