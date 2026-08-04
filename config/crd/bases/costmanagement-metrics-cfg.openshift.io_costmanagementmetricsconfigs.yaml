@@ -208,6 +208,78 @@ spec:
                       IngressAPIPath is a field of CostManagementMetricsConfig to represent the path of the Ingress API service.
                       The default is `/api/ingress/v1/upload`.
                     type: string
+                  onPrem:
+                    description: |-
+                      OnPrem configures direct-to-S3 + Kafka upload for on-prem deployments,
+                      bypassing the Ingress service. When OnPrem.Enabled is true the Ingress
+                      upload path is not used.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled switches the upload path from Ingress
+                          HTTP POST to direct S3+Kafka.
+                        type: boolean
+                      kafka:
+                        description: Kafka holds the broker address and topic for
+                          upload announcements.
+                        properties:
+                          bootstrap:
+                            description: Bootstrap is the Kafka bootstrap server address
+                              (host:port).
+                            type: string
+                          topic:
+                            default: platform.upload.announce
+                            description: Topic is the Kafka topic for upload announcements.
+                            type: string
+                        required:
+                        - bootstrap
+                        type: object
+                      orgID:
+                        description: |-
+                          OrgID is the organization identifier embedded in the Kafka message identity.
+                          Defaults to the cluster ID when not set.
+                        type: string
+                      s3:
+                        description: S3 holds the object storage configuration where
+                          tarballs are written.
+                        properties:
+                          bucket:
+                            description: Bucket is the S3 bucket where tarballs are
+                              written.
+                            type: string
+                          credentialsSecret:
+                            description: |-
+                              CredentialsSecret is the name of a Secret in the operator namespace
+                              containing keys "access-key" and "secret-key".
+                            type: string
+                          endpoint:
+                            description: Endpoint is the S3-compatible service hostname
+                              (e.g. s4.cost-onprem.svc.cluster.local).
+                            type: string
+                          maxPayloads:
+                            default: 10
+                            description: |-
+                              MaxPayloads is the maximum number of uploaded tarballs to retain in S3.
+                              After each upload, objects beyond this count (oldest by LastModified) are
+                              deleted. Default 10 gives ~60 h of retention at the default 6 h upload cycle.
+                            minimum: 1
+                            type: integer
+                          port:
+                            default: 7480
+                            description: Port is the S3 service port. Default 7480
+                              matches S4/Ceph RGW.
+                            minimum: 1
+                            type: integer
+                          useSSL:
+                            default: false
+                            description: UseSSL controls TLS for the S3 connection.
+                            type: boolean
+                        required:
+                        - bucket
+                        - credentialsSecret
+                        - endpoint
+                        type: object
+                    type: object
                   upload_cycle:
                     default: 360
                     description: |-
@@ -1026,6 +1098,19 @@ spec:
                     description: LastUploadStatus is a field of CostManagementMetricsConfig
                       that shows the http status of the last upload.
                     type: string
+                  onPrem:
+                    description: OnPrem reflects the observed state of the on-prem
+                      upload path.
+                    properties:
+                      enabled:
+                        description: Enabled reflects whether the on-prem upload path
+                          is active.
+                        type: boolean
+                      lastS3Key:
+                        description: LastS3Key is the S3 object key of the most recently
+                          uploaded tarball.
+                        type: string
+                    type: object
                   upload:
                     description: |-
                       UploadToggle is a field of CostManagementMetricsConfig to represent if the operator should upload to console.redhat.com.

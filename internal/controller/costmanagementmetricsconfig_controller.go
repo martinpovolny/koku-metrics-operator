@@ -39,6 +39,7 @@ import (
 	"github.com/project-koku/koku-metrics-operator/internal/collector"
 	"github.com/project-koku/koku-metrics-operator/internal/crhchttp"
 	"github.com/project-koku/koku-metrics-operator/internal/dirconfig"
+	"github.com/project-koku/koku-metrics-operator/internal/onpremupload"
 	"github.com/project-koku/koku-metrics-operator/internal/packaging"
 	"github.com/project-koku/koku-metrics-operator/internal/sources"
 	"github.com/project-koku/koku-metrics-operator/internal/storage"
@@ -158,6 +159,15 @@ func ReflectSpec(r *MetricsConfigReconciler, cr *metricscfgv1beta1.MetricsConfig
 
 	StringReflectSpec(r, cr, &cr.Spec.Upload.IngressAPIPath, &cr.Status.Upload.IngressAPIPath, metricscfgv1beta1.DefaultIngressPath)
 	cr.Status.Upload.UploadToggle = cr.Spec.Upload.UploadToggle
+
+	if cr.Spec.Upload.OnPrem.Enabled {
+		if cr.Spec.Upload.OnPrem.Kafka.Topic == "" {
+			cr.Spec.Upload.OnPrem.Kafka.Topic = "platform.upload.announce"
+		}
+		if cr.Spec.Upload.OnPrem.S3.MaxPayloads == 0 {
+			cr.Spec.Upload.OnPrem.S3.MaxPayloads = 10
+		}
+	}
 
 	// set the default max file size for packaging
 	cr.Status.Packaging.MaxSize = &cr.Spec.Packaging.MaxSize
@@ -586,7 +596,14 @@ func filesToUpload(cr *metricscfgv1beta1.MetricsConfig, dirCfg *dirconfig.Direct
 }
 
 func (r *MetricsConfigReconciler) uploadFiles(authConfig *crhchttp.AuthConfig, cr *metricscfgv1beta1.MetricsConfig, dirCfg *dirconfig.DirectoryConfig, packager *packaging.FilePackager, uploadFiles []string) error {
-	log := log.WithName("uploadFiles")
+	if cr.Spec.Upload.OnPrem.Enabled {
+		return r.uploadFilesOnPrem(cr, dirCfg, packager, uploadFiles)
+	}
+	return r.uploadFilesIngress(authConfig, cr, dirCfg, packager, uploadFiles)
+}
+
+func (r *MetricsConfigReconciler) uploadFilesIngress(authConfig *crhchttp.AuthConfig, cr *metricscfgv1beta1.MetricsConfig, dirCfg *dirconfig.DirectoryConfig, packager *packaging.FilePackager, uploadFiles []string) error {
+	log := log.WithName("uploadFilesIngress")
 
 	log.Info("files ready for upload: " + strings.Join(uploadFiles, ", "))
 	log.Info(fmt.Sprintf("pausing for %d seconds before uploading", *cr.Status.Upload.UploadWait))
@@ -603,7 +620,6 @@ func (r *MetricsConfigReconciler) uploadFiles(authConfig *crhchttp.AuthConfig, c
 		}
 
 		log.Info(fmt.Sprintf("uploading file: %s", file))
-		// grab the body and the multipart file header
 		body, contentType, err := crhchttp.GetMultiPartBodyAndHeaders(filepath.Join(dirCfg.Upload.Path, file))
 		if err != nil {
 			log.Error(err, "failed to set multipart body and headers")
@@ -624,11 +640,110 @@ func (r *MetricsConfigReconciler) uploadFiles(authConfig *crhchttp.AuthConfig, c
 		}
 		if strings.Contains(uploadStatus, "202") {
 			cr.Status.Upload.LastSuccessfulUploadTime = uploadTime
-			// remove the tar.gz after a successful upload
 			log.Info("removing tar file since upload was successful")
 			if err := os.Remove(filepath.Join(dirCfg.Upload.Path, file)); err != nil {
 				log.Error(err, "error removing tar file")
 			}
+		}
+	}
+	return nil
+}
+
+func (r *MetricsConfigReconciler) uploadFilesOnPrem(cr *metricscfgv1beta1.MetricsConfig, dirCfg *dirconfig.DirectoryConfig, packager *packaging.FilePackager, uploadFiles []string) error {
+	log := log.WithName("uploadFilesOnPrem")
+	ctx := context.Background()
+
+	spec := cr.Spec.Upload.OnPrem
+
+	// Resolve S3 credentials from the referenced Secret.
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: cr.Namespace,
+		Name:      spec.S3.CredentialsSecret,
+	}, secret); err != nil {
+		return fmt.Errorf("get credentials secret %q: %w", spec.S3.CredentialsSecret, err)
+	}
+	s3Cfg := onpremupload.S3Config{
+		Endpoint:    spec.S3.Endpoint,
+		Port:        spec.S3.Port,
+		UseSSL:      spec.S3.UseSSL,
+		Bucket:      spec.S3.Bucket,
+		AccessKey:   string(secret.Data["access-key"]),
+		SecretKey:   string(secret.Data["secret-key"]),
+		MaxPayloads: spec.S3.MaxPayloads,
+	}
+	kafkaCfg := onpremupload.KafkaConfig{
+		Bootstrap: spec.Kafka.Bootstrap,
+		Topic:     spec.Kafka.Topic,
+	}
+
+	orgID := spec.OrgID
+	if orgID == "" {
+		orgID = cr.Status.ClusterID
+	}
+
+	cr.Status.Upload.OnPrem.Enabled = true
+
+	log.Info("files ready for on-prem upload: " + strings.Join(uploadFiles, ", "))
+	log.Info(fmt.Sprintf("pausing for %d seconds before uploading", *cr.Status.Upload.UploadWait))
+	time.Sleep(time.Duration(*cr.Status.Upload.UploadWait) * time.Second)
+
+	for _, file := range uploadFiles {
+		if !strings.Contains(file, "tar.gz") {
+			continue
+		}
+
+		manifestInfo, err := packager.GetFileInfo(filepath.Join(dirCfg.Upload.Path, file))
+		if err != nil {
+			log.Error(err, "could not read file information from tar.gz")
+			continue
+		}
+
+		log.Info(fmt.Sprintf("uploading file to S3: %s", file))
+		localPath := filepath.Join(dirCfg.Upload.Path, file)
+		s3URL, err := onpremupload.PutFile(ctx, s3Cfg, localPath, manifestInfo.UUID)
+		if err != nil {
+			log.Error(err, "S3 upload failed")
+			cr.Status.Upload.UploadError = err.Error()
+			cr.Status.Upload.LastUploadStatus = "S3 upload failed"
+			return nil
+		}
+
+		cr.Status.Upload.LastPayloadName = file
+		cr.Status.Upload.LastPayloadFiles = manifestInfo.Files
+		cr.Status.Upload.LastPayloadManifestID = manifestInfo.UUID
+		cr.Status.Upload.OnPrem.LastS3Key = "uploads/" + manifestInfo.UUID + ".tar.gz"
+
+		msg := onpremupload.AnnounceMessage{
+			RequestID:   manifestInfo.UUID,
+			Account:     orgID,
+			OrgID:       orgID,
+			Category:    "tar",
+			URL:         s3URL,
+			B64Identity: onpremupload.BuildIdentity(cr.Status.ClusterID, orgID),
+		}
+		msg.Metadata.Reporter = ""
+		msg.Metadata.StaleTimestamp = "0001-01-01T00:00:00Z"
+
+		if err := onpremupload.Announce(ctx, kafkaCfg, msg); err != nil {
+			log.Error(err, "Kafka announce failed")
+			cr.Status.Upload.UploadError = err.Error()
+			cr.Status.Upload.LastUploadStatus = "Kafka announce failed"
+			return nil
+		}
+
+		uploadTime := metav1.Now()
+		cr.Status.Upload.LastSuccessfulUploadTime = uploadTime
+		cr.Status.Upload.LastUploadStatus = "on-prem upload successful"
+		cr.Status.Upload.UploadError = ""
+
+		log.Info("removing tar file after successful on-prem upload")
+		if err := os.Remove(localPath); err != nil {
+			log.Error(err, "error removing tar file")
+		}
+
+		if err := onpremupload.PruneOldPayloads(ctx, s3Cfg); err != nil {
+			log.Error(err, "failed to prune old S3 payloads (non-fatal)")
 		}
 	}
 	return nil

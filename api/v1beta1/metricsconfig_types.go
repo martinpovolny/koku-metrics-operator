@@ -134,6 +134,64 @@ type PackagingSpec struct {
 	MaxReports int64 `json:"max_reports_to_store"`
 }
 
+// OnPremS3Spec configures the S3-compatible storage endpoint for on-prem direct upload.
+type OnPremS3Spec struct {
+	// Endpoint is the S3-compatible service hostname (e.g. s4.cost-onprem.svc.cluster.local).
+	Endpoint string `json:"endpoint"`
+
+	// Port is the S3 service port. Default 7480 matches S4/Ceph RGW.
+	// +kubebuilder:default=7480
+	// +kubebuilder:validation:Minimum=1
+	Port int `json:"port,omitempty"`
+
+	// UseSSL controls TLS for the S3 connection.
+	// +kubebuilder:default=false
+	UseSSL bool `json:"useSSL,omitempty"`
+
+	// Bucket is the S3 bucket where tarballs are written.
+	Bucket string `json:"bucket"`
+
+	// CredentialsSecret is the name of a Secret in the operator namespace
+	// containing keys "access-key" and "secret-key".
+	CredentialsSecret string `json:"credentialsSecret"`
+
+	// MaxPayloads is the maximum number of uploaded tarballs to retain in S3.
+	// After each upload, objects beyond this count (oldest by LastModified) are
+	// deleted. Default 10 gives ~60 h of retention at the default 6 h upload cycle.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	MaxPayloads int `json:"maxPayloads,omitempty"`
+}
+
+// OnPremKafkaSpec configures the Kafka broker for on-prem upload announcements.
+type OnPremKafkaSpec struct {
+	// Bootstrap is the Kafka bootstrap server address (host:port).
+	Bootstrap string `json:"bootstrap"`
+
+	// Topic is the Kafka topic for upload announcements.
+	// +kubebuilder:default="platform.upload.announce"
+	Topic string `json:"topic,omitempty"`
+}
+
+// OnPremUploadSpec configures direct-to-S3 + Kafka upload, bypassing the
+// Ingress service. Intended for on-prem deployments only.
+type OnPremUploadSpec struct {
+	// Enabled switches the upload path from Ingress HTTP POST to direct S3+Kafka.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// S3 holds the object storage configuration where tarballs are written.
+	S3 OnPremS3Spec `json:"s3,omitempty"`
+
+	// Kafka holds the broker address and topic for upload announcements.
+	Kafka OnPremKafkaSpec `json:"kafka,omitempty"`
+
+	// OrgID is the organization identifier embedded in the Kafka message identity.
+	// Defaults to the cluster ID when not set.
+	// +optional
+	OrgID string `json:"orgID,omitempty"`
+}
+
 // UploadSpec defines the desired state of Authentication object in the CostManagementMetricsConfigSpec.
 type UploadSpec struct {
 
@@ -163,6 +221,12 @@ type UploadSpec struct {
 	// ValidateCert is a field of CostManagementMetricsConfig to represent if the Ingress endpoint must be certificate validated.
 	// +kubebuilder:default=true
 	ValidateCert *bool `json:"validate_cert"`
+
+	// OnPrem configures direct-to-S3 + Kafka upload for on-prem deployments,
+	// bypassing the Ingress service. When OnPrem.Enabled is true the Ingress
+	// upload path is not used.
+	// +optional
+	OnPrem OnPremUploadSpec `json:"onPrem,omitempty"`
 }
 
 // PrometheusSpec defines the desired state of PrometheusConfig object in the CostManagementMetricsConfigSpec.
@@ -362,6 +426,20 @@ type UploadStatus struct {
 
 	// ValidateCert is a field of CostManagementMetricsConfig to represent if the Ingress endpoint must be certificate validated.
 	ValidateCert *bool `json:"validate_cert,omitempty"`
+
+	// OnPrem reflects the observed state of the on-prem upload path.
+	// +optional
+	OnPrem OnPremUploadStatus `json:"onPrem,omitempty"`
+}
+
+// OnPremUploadStatus reflects the observed state of the on-prem upload path.
+type OnPremUploadStatus struct {
+	// Enabled reflects whether the on-prem upload path is active.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// LastS3Key is the S3 object key of the most recently uploaded tarball.
+	// +optional
+	LastS3Key string `json:"lastS3Key,omitempty"`
 }
 
 // CloudDotRedHatSourceStatus defines the observed state of CloudDotRedHatSource object in the CostManagementMetricsConfigStatus.
