@@ -1,0 +1,56 @@
+# On-prem deployment example — direct S3 + Kafka upload path.
+#
+# Deploys the operator CR configured to bypass the Ingress service and write
+# cost payloads directly to an S3-compatible store (S4 / Ceph RGW) and publish
+# a Kafka announce message that koku's masu listener consumes.
+#
+# Prerequisites:
+#   - S3-compatible service (S4) accessible at the address below.
+#   - Kafka broker (Redpanda or AMQ Streams) accessible at the address below.
+#   - The S3 bucket must exist and have public-read ACL so koku can HTTP-GET
+#     payloads without credentials:
+#       aws --endpoint-url http://<s4-host>:7480 s3api put-bucket-acl \
+#           --bucket cost-payloads --acl public-read
+#
+# Apply:
+#   kubectl apply -n <operator-namespace> -f onprem.yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cost-onprem-s3-credentials
+  # Must be in the same namespace as the operator pod.
+type: Opaque
+stringData:
+  access-key: YOUR_S3_ACCESS_KEY
+  secret-key: YOUR_S3_SECRET_KEY
+---
+apiVersion: costmanagement-metrics-cfg.openshift.io/v1beta1
+kind: CostManagementMetricsConfig
+metadata:
+  name: costmanagementmetricscfg-onprem
+spec:
+  packaging:
+    max_reports_to_store: 30
+    max_size_MB: 100
+  prometheus_config:
+    collect_previous_data: true
+    context_timeout: 120
+    disable_metrics_collection_cost_management: false
+    disable_metrics_collection_resource_optimization: false
+  upload:
+    upload_cycle: 360
+    upload_toggle: true
+    onPrem:
+      enabled: true
+      orgID: ""  # Optional: leave empty to use the cluster ID as the org identifier.
+      s3:
+        endpoint: s4.cost-onprem.svc.cluster.local  # Service hostname inside the cluster.
+        port: 7480
+        useSSL: false
+        bucket: cost-payloads
+        credentialsSecret: cost-onprem-s3-credentials
+        maxPayloads: 10  # Retain the 10 most recent uploads; older objects are pruned.
+      kafka:
+        bootstrap: redpanda.cost-onprem.svc.cluster.local:9092
+        topic: platform.upload.announce  # Default; change only if your koku listens elsewhere.
