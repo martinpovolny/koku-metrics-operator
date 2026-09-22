@@ -64,7 +64,20 @@ if [ -f .pre-commit-config.yaml ]; then
     pre-commit install --install-hooks || true
 fi
 
-# ── 7. Verify tools ──
+# ── 7. Codex CLI (agent offload; node feature provides npm) ──
+# Auth comes from the OPENAI_API_KEY Codespaces secret (repo Settings →
+# Secrets and variables → Codespaces). Nothing to commit, nothing to hardcode.
+if ! command -v codex >/dev/null 2>&1; then
+    echo "Installing Codex CLI..."
+    npm install -g @openai/codex
+fi
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "NOTE: OPENAI_API_KEY is not set — add it as a Codespaces secret to use Codex."
+else
+    echo "Codex CLI ready (OPENAI_API_KEY detected)."
+fi
+
+# ── 8. Verify tools ──
 echo ""
 echo "--- Tool Versions ---"
 go version
