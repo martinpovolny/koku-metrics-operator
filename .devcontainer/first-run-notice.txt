@@ -26,7 +26,7 @@ Run `kubectl get nodes` to verify.
 
 🛠️  Available tools: go 1.26, oc, kubectl, kustomize, controller-gen,
    setup-envtest, operator-sdk, yq, k3d, k9s, gh, docker, pre-commit,
-   codex (needs OPENAI_API_KEY as a Codespaces secret)
+   codex (needs CODEX_AUTH_JSON or OPENAI_API_KEY as a Codespaces secret)
 
    k9s                          # terminal UI for Kubernetes
    kubectl get pods -A          # list all pods

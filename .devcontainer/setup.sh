@@ -65,16 +65,27 @@ if [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ── 7. Codex CLI (agent offload; node feature provides npm) ──
-# Auth comes from the OPENAI_API_KEY Codespaces secret (repo Settings →
-# Secrets and variables → Codespaces). Nothing to commit, nothing to hardcode.
+# Auth options (repo Settings → Secrets and variables → Codespaces):
+#   - CODEX_AUTH_JSON: content of ~/.codex/auth.json (ChatGPT plan login),
+#     written here with 600 perms and never overwritten once present.
+#   - OPENAI_API_KEY: API key, read directly by the CLI.
+# Nothing to commit, nothing to hardcode.
 if ! command -v codex >/dev/null 2>&1; then
     echo "Installing Codex CLI..."
     npm install -g @openai/codex
 fi
-if [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "NOTE: OPENAI_API_KEY is not set — add it as a Codespaces secret to use Codex."
-else
+mkdir -p ~/.codex
+chmod 700 ~/.codex
+if [ ! -f ~/.codex/auth.json ] && [ -n "${CODEX_AUTH_JSON:-}" ]; then
+    printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+    chmod 600 ~/.codex/auth.json
+fi
+if [ -f ~/.codex/auth.json ]; then
+    echo "Codex CLI ready (auth.json present)."
+elif [ -n "${OPENAI_API_KEY:-}" ]; then
     echo "Codex CLI ready (OPENAI_API_KEY detected)."
+else
+    echo "NOTE: neither ~/.codex/auth.json nor OPENAI_API_KEY is set — add CODEX_AUTH_JSON or OPENAI_API_KEY as a Codespaces secret to use Codex."
 fi
 
 # ── 8. Verify tools ──
