@@ -67,11 +67,25 @@ fi
 # ── 7. OpenCode CLI (agent offload; node feature provides npm) ──
 # Auth: set OPENROUTER_API_KEY as a Codespaces secret
 # (repo Settings → Secrets and variables → Codespaces).
-# OpenCode reads OPENROUTER_API_KEY directly; nothing to commit.
+# OpenCode reads OPENROUTER_API_KEY from the environment, but that variable
+# is only visible in the setup/VS Code process environment — not in
+# non-interactive `gh codespace ssh --` sessions. Persist it once as
+# OpenCode's auth file (600 perms, never overwritten) so `opencode run`
+# works over ssh too. Format: {"openrouter":{"type":"api","key":"..."}}.
 if ! command -v opencode >/dev/null 2>&1; then
     echo "Installing OpenCode CLI..."
     npm install -g opencode-ai@latest
 fi
+OPENCODE_AUTH_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json"
+if [ -n "${OPENROUTER_API_KEY:-}" ] && [ ! -s "$OPENCODE_AUTH_FILE" ]; then
+    mkdir -p "$(dirname "$OPENCODE_AUTH_FILE")"
+    OPENROUTER_KEY_JSON="$(printf '%s' "$OPENROUTER_API_KEY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    printf '{"openrouter":{"type":"api","key":%s}}' "$OPENROUTER_KEY_JSON" > "$OPENCODE_AUTH_FILE"
+    chmod 600 "$OPENCODE_AUTH_FILE"
+    unset OPENROUTER_KEY_JSON
+    echo "OpenCode auth seeded from OPENROUTER_API_KEY."
+fi
+unset OPENCODE_AUTH_FILE
 if [ -n "${OPENROUTER_API_KEY:-}" ]; then
     echo "OpenCode ready (OPENROUTER_API_KEY detected)."
 else
