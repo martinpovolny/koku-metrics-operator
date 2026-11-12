@@ -60,14 +60,6 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 
-	// fetch leader election configurations from environment variables
-	leaseDuration := getEnvVarDuration("LEADER_ELECTION_LEASE_DURATION", defaultLeaseDuration)
-	renewDeadline := getEnvVarDuration("LEADER_ELECTION_RENEW_DEADLINE", defaultRenewDeadline)
-	retryPeriod := getEnvVarDuration("LEADER_ELECTION_RETRY_PERIOD", defaultRetryPeriod)
-
-	// validate leader election
-	leaseDuration, renewDeadline, retryPeriod = validateLeaderElectionConfig(leaseDuration, renewDeadline, retryPeriod)
-
 	opts := zap.Options{
 		Development: true,
 		TimeEncoder: zapcore.RFC3339NanoTimeEncoder,
@@ -76,6 +68,21 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Conditionally fetch and validate leader election configuration
+	var leaseDuration, renewDeadline, retryPeriod time.Duration
+	if enableLeaderElection {
+		setupLog.Info("Leader election enabled for multi-replica deployment")
+		// fetch leader election configurations from environment variables
+		leaseDuration = getEnvVarDuration("LEADER_ELECTION_LEASE_DURATION", defaultLeaseDuration)
+		renewDeadline = getEnvVarDuration("LEADER_ELECTION_RENEW_DEADLINE", defaultRenewDeadline)
+		retryPeriod = getEnvVarDuration("LEADER_ELECTION_RETRY_PERIOD", defaultRetryPeriod)
+
+		// validate leader election
+		leaseDuration, renewDeadline, retryPeriod = validateLeaderElectionConfig(leaseDuration, renewDeadline, retryPeriod)
+	} else {
+		setupLog.Info("Leader election disabled for single-pod deployment")
+	}
 
 	inCluster := false
 	if value, ok := os.LookupEnv("IN_CLUSTER"); ok {
@@ -88,18 +95,23 @@ func main() {
 			"the manager will watch and manage resources in all namespaces")
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgrOpts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{watchNamespace: {}}},
+	}
 
-		LeaderElection:   enableLeaderElection,
-		LeaderElectionID: "91c624a5.openshift.io",
-		LeaseDuration:    &leaseDuration,
-		RenewDeadline:    &renewDeadline,
-		RetryPeriod:      &retryPeriod,
-		Cache:            cache.Options{DefaultNamespaces: map[string]cache.Config{watchNamespace: {}}},
-	})
+	// Only set leader election parameters when leader election is enabled
+	if enableLeaderElection {
+		mgrOpts.LeaderElectionID = "91c624a5.openshift.io"
+		mgrOpts.LeaseDuration = &leaseDuration
+		mgrOpts.RenewDeadline = &renewDeadline
+		mgrOpts.RetryPeriod = &retryPeriod
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
