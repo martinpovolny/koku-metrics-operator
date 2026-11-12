@@ -241,3 +241,100 @@ func TestValidateLeaderElectionConfig(t *testing.T) {
 		})
 	}
 }
+
+// Test leader election configuration gating
+func TestLeaderElectionGating(t *testing.T) {
+	testCases := []struct {
+		name                  string
+		enableLeaderElection  bool
+		setEnvVars            bool
+		envLeaseDuration      string
+		envRenewDeadline      string
+		envRetryPeriod        string
+		expectEnvVarsRead     bool
+		expectedLeaseDuration time.Duration
+		expectedRenewDeadline time.Duration
+		expectedRetryPeriod   time.Duration
+	}{
+		{
+			name:                  "Leader election disabled - env vars not read",
+			enableLeaderElection:  false,
+			setEnvVars:            true,
+			envLeaseDuration:      "90s",
+			envRenewDeadline:      "45s",
+			envRetryPeriod:        "10s",
+			expectEnvVarsRead:     false,
+			expectedLeaseDuration: 0,
+			expectedRenewDeadline: 0,
+			expectedRetryPeriod:   0,
+		},
+		{
+			name:                  "Leader election enabled - env vars read and used",
+			enableLeaderElection:  true,
+			setEnvVars:            true,
+			envLeaseDuration:      "90s",
+			envRenewDeadline:      "45s",
+			envRetryPeriod:        "10s",
+			expectEnvVarsRead:     true,
+			expectedLeaseDuration: 90 * time.Second,
+			expectedRenewDeadline: 45 * time.Second,
+			expectedRetryPeriod:   10 * time.Second,
+		},
+		{
+			name:                  "Leader election enabled - defaults when env vars not set",
+			enableLeaderElection:  true,
+			setEnvVars:            false,
+			expectEnvVarsRead:     true,
+			expectedLeaseDuration: defaultLeaseDuration,
+			expectedRenewDeadline: defaultRenewDeadline,
+			expectedRetryPeriod:   defaultRetryPeriod,
+		},
+		{
+			name:                  "Leader election disabled - zero values when disabled",
+			enableLeaderElection:  false,
+			setEnvVars:            false,
+			expectEnvVarsRead:     false,
+			expectedLeaseDuration: 0,
+			expectedRenewDeadline: 0,
+			expectedRetryPeriod:   0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Setup environment
+			if tc.setEnvVars {
+				defer setEnvVar(t, "LEADER_ELECTION_LEASE_DURATION", tc.envLeaseDuration)()
+				defer setEnvVar(t, "LEADER_ELECTION_RENEW_DEADLINE", tc.envRenewDeadline)()
+				defer setEnvVar(t, "LEADER_ELECTION_RETRY_PERIOD", tc.envRetryPeriod)()
+			} else {
+				defer unsetEnvVar(t, "LEADER_ELECTION_LEASE_DURATION")()
+				defer unsetEnvVar(t, "LEADER_ELECTION_RENEW_DEADLINE")()
+				defer unsetEnvVar(t, "LEADER_ELECTION_RETRY_PERIOD")()
+			}
+
+			// Simulate the gating logic from main.go
+			var leaseDuration, renewDeadline, retryPeriod time.Duration
+			if tc.enableLeaderElection {
+				// fetch leader election configurations from environment variables
+				leaseDuration = getEnvVarDuration("LEADER_ELECTION_LEASE_DURATION", defaultLeaseDuration)
+				renewDeadline = getEnvVarDuration("LEADER_ELECTION_RENEW_DEADLINE", defaultRenewDeadline)
+				retryPeriod = getEnvVarDuration("LEADER_ELECTION_RETRY_PERIOD", defaultRetryPeriod)
+
+				// validate leader election
+				leaseDuration, renewDeadline, retryPeriod = validateLeaderElectionConfig(leaseDuration, renewDeadline, retryPeriod)
+			}
+
+			// Verify results
+			if leaseDuration != tc.expectedLeaseDuration {
+				t.Errorf("expected leaseDuration=%v, got %v", tc.expectedLeaseDuration, leaseDuration)
+			}
+			if renewDeadline != tc.expectedRenewDeadline {
+				t.Errorf("expected renewDeadline=%v, got %v", tc.expectedRenewDeadline, renewDeadline)
+			}
+			if retryPeriod != tc.expectedRetryPeriod {
+				t.Errorf("expected retryPeriod=%v, got %v", tc.expectedRetryPeriod, retryPeriod)
+			}
+		})
+	}
+}

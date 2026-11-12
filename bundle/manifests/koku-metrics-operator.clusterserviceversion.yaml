@@ -549,9 +549,7 @@ spec:
                               values:
                                 - linux
                 containers:
-                  - args:
-                      - --leader-elect
-                    command:
+                  - command:
                       - /manager
                     env:
                       - name: LEADER_ELECTION_LEASE_DURATION
