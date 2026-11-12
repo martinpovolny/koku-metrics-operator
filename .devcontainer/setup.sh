@@ -64,28 +64,18 @@ if [ -f .pre-commit-config.yaml ]; then
     pre-commit install --install-hooks || true
 fi
 
-# ── 7. Codex CLI (agent offload; node feature provides npm) ──
-# Auth options (repo Settings → Secrets and variables → Codespaces):
-#   - CODEX_AUTH_JSON: content of ~/.codex/auth.json (ChatGPT plan login),
-#     written here with 600 perms and never overwritten once present.
-#   - OPENAI_API_KEY: API key, read directly by the CLI.
-# Nothing to commit, nothing to hardcode.
-if ! command -v codex >/dev/null 2>&1; then
-    echo "Installing Codex CLI..."
-    npm install -g @openai/codex
+# ── 7. OpenCode CLI (agent offload; node feature provides npm) ──
+# Auth: set OPENROUTER_API_KEY as a Codespaces secret
+# (repo Settings → Secrets and variables → Codespaces).
+# OpenCode reads OPENROUTER_API_KEY directly; nothing to commit.
+if ! command -v opencode >/dev/null 2>&1; then
+    echo "Installing OpenCode CLI..."
+    npm install -g opencode-ai@latest
 fi
-mkdir -p ~/.codex
-chmod 700 ~/.codex
-if [ ! -f ~/.codex/auth.json ] && [ -n "${CODEX_AUTH_JSON:-}" ]; then
-    printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
-    chmod 600 ~/.codex/auth.json
-fi
-if [ -f ~/.codex/auth.json ]; then
-    echo "Codex CLI ready (auth.json present)."
-elif [ -n "${OPENAI_API_KEY:-}" ]; then
-    echo "Codex CLI ready (OPENAI_API_KEY detected)."
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    echo "OpenCode ready (OPENROUTER_API_KEY detected)."
 else
-    echo "NOTE: neither ~/.codex/auth.json nor OPENAI_API_KEY is set — add CODEX_AUTH_JSON or OPENAI_API_KEY as a Codespaces secret to use Codex."
+    echo "NOTE: OPENROUTER_API_KEY is not set — add it as a Codespaces secret to use OpenCode."
 fi
 
 # ── 8. Verify tools ──
@@ -100,6 +90,7 @@ operator-sdk version 2>/dev/null || true
 k3d version
 k9s version --short 2>/dev/null || k9s version || true
 gh version --short 2>/dev/null || gh --version | head -1
+opencode --version 2>/dev/null || echo "opencode: not installed"
 docker version --format 'Docker {{.Client.Version}}'
 
 echo ""
